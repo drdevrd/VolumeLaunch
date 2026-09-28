@@ -5,12 +5,11 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.media.AudioManager
-import android.media.VolumeProvider
-import android.media.session.MediaSession
-import android.media.session.PlaybackState
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
@@ -22,111 +21,102 @@ import android.os.Vibrator
 
 class MediaKeyService : Service() {
 
-    private var session: MediaSession? = null
     private val main = Handler(Looper.getMainLooper())
-    private var firstRaiseAt = 0L
-    private var raiseCount = 0
+    private var firstAt = 0L
+    private var lastAt = 0L
+    private var count = 0
     private var lastFireAt = 0L
-    private var lastEventAt = 0L
+    private var prevVolume = -1
+    private var restoring = false
+
+    private val receiver = object : BroadcastReceiver() {
+        override fun onReceive(c: Context, i: Intent) {
+            if (i.action != "android.media.VOLUME_CHANGED_ACTION") return
+            val stream = i.getIntExtra("android.media.EXTRA_VOLUME_STREAM_TYPE", -1)
+            val newV = i.getIntExtra("android.media.EXTRA_VOLUME_STREAM_VALUE", -1)
+            val oldV = i.getIntExtra("android.media.EXTRA_PREV_VOLUME_STREAM_VALUE", -1)
+            // Only care about music/ring streams going UP
+            if (stream != AudioManager.STREAM_MUSIC && stream != AudioManager.STREAM_RING) return
+            if (newV <= oldV) return
+            if (restoring) return
+            onRaise(oldV, stream)
+        }
+    }
 
     override fun onBind(p: Intent?): IBinder? = null
 
     override fun onCreate() {
         super.onCreate()
         startInForeground()
-        startSession()
+        val f = IntentFilter("android.media.VOLUME_CHANGED_ACTION")
+        if (Build.VERSION.SDK_INT >= 33) {
+            registerReceiver(receiver, f, Context.RECEIVER_EXPORTED)
+        } else {
+            registerReceiver(receiver, f)
+        }
     }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        return START_STICKY
-    }
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
 
     private fun startInForeground() {
         val ch = "vl_bg"
         val nm = getSystemService(NotificationManager::class.java)
-        if (Build.VERSION.SDK_INT >= 26) {
-            if (nm.getNotificationChannel(ch) == null) {
-                val c = NotificationChannel(ch, "Volume Launch background",
-                    NotificationManager.IMPORTANCE_MIN)
-                c.setShowBadge(false)
-                nm.createNotificationChannel(c)
-            }
+        if (Build.VERSION.SDK_INT >= 26 && nm.getNotificationChannel(ch) == null) {
+            nm.createNotificationChannel(NotificationChannel(ch,
+                "Volume Launch background", NotificationManager.IMPORTANCE_MIN).apply { setShowBadge(false) })
         }
         val open = PendingIntent.getActivity(this, 0,
             Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         val n: Notification = Notification.Builder(this, ch)
             .setContentTitle("Volume Launch active")
-            .setContentText("Hold Volume Up to open your chosen app")
+            .setContentText("Hold Volume Up to open your app")
             .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
             .setContentIntent(open)
             .setOngoing(true)
             .build()
-        if (Build.VERSION.SDK_INT >= 29) {
-            startForeground(1, n,
-                android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
-        } else {
-            startForeground(1, n)
-        }
+        startForeground(1, n)
     }
 
-    private fun startSession() {
-        val s = MediaSession(this, "VolumeLaunch")
-        val pb = PlaybackState.Builder()
-            .setState(PlaybackState.STATE_PLAYING, 0, 1f)
-            .setActions(PlaybackState.ACTION_PLAY_PAUSE)
-            .build()
-        s.setPlaybackState(pb)
-        s.isActive = true
-        val vp = object : VolumeProvider(VOLUME_CONTROL_RELATIVE, 100, 50) {
-            override fun onAdjustVolume(direction: Int) {
-                if (direction > 0) onRaise()
-                currentVolume = 50 // stay in middle so system does not adjust real volume
-            }
-            override fun onSetVolumeTo(volume: Int) {
-                currentVolume = 50
-            }
-        }
-        s.setPlaybackToRemote(vp)
-        session = s
-    }
-
-    private fun onRaise() {
-        val ctx = this
+    private fun onRaise(oldVolume: Int, stream: Int) {
         val now = SystemClock.uptimeMillis()
 
-        // Only react when screen is off or locked (or user opted-in via toggle)
         val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
         val screenOff = !pm.isInteractive
-        val alsoUnlocked = Prefs.alsoUnlocked(ctx)
-        if (!screenOff && !alsoUnlocked) return
+        if (!screenOff && !Prefs.alsoUnlocked(this)) return
+        if (now - lastFireAt < 2000) return
 
-        // Debounce: ignore rapid follow-up fires
-        if (now - lastFireAt < 1500) return
-
-        // Reset window if a long gap since last event
-        if (now - lastEventAt > 400 || raiseCount == 0) {
-            firstRaiseAt = now
-            raiseCount = 1
+        // Window based grouping: if the last raise was long ago, start over
+        if (count == 0 || now - lastAt > 500) {
+            firstAt = now
+            count = 1
+            prevVolume = oldVolume
         } else {
-            raiseCount++
+            count++
         }
-        lastEventAt = now
+        lastAt = now
 
-        val holdMs = Prefs.holdMs(ctx)
-        val elapsed = now - firstRaiseAt
+        val holdMs = Prefs.holdMs(this)
+        val elapsed = now - firstAt
 
-        // Android key repeat gives ~1 event per 50-70 ms while held.
-        // Fire when we have enough repeats within the hold window.
-        val needed = when {
-            holdMs <= 400 -> 4
-            holdMs <= 700 -> 6
-            holdMs <= 1000 -> 9
-            else -> 12
+        // Android key auto-repeat sends first repeat after ~400ms then ~every 50-80ms.
+        // So a real hold produces many events; a single tap produces just one.
+        val neededCount = when {
+            holdMs <= 400 -> 2
+            holdMs <= 700 -> 3
+            holdMs <= 1000 -> 5
+            else -> 7
         }
-        if (raiseCount >= needed && elapsed >= holdMs - 150) {
+        if (count >= neededCount && elapsed >= holdMs - 200) {
             lastFireAt = now
-            raiseCount = 0
+            count = 0
+            // Restore volume
+            try {
+                restoring = true
+                val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+                am.setStreamVolume(stream, prevVolume, 0)
+                main.postDelayed({ restoring = false }, 300)
+            } catch (_: Exception) { restoring = false }
             launchTarget()
         }
     }
@@ -150,7 +140,7 @@ class MediaKeyService : Service() {
     }
 
     override fun onDestroy() {
-        try { session?.isActive = false; session?.release() } catch (_: Exception) {}
+        try { unregisterReceiver(receiver) } catch (_: Exception) {}
         super.onDestroy()
     }
 }

@@ -37,9 +37,17 @@ class MediaKeyService : Service() {
             val oldV = i.getIntExtra("android.media.EXTRA_PREV_VOLUME_STREAM_VALUE", -1)
             // Only care about music/ring streams going UP
             if (stream != AudioManager.STREAM_MUSIC && stream != AudioManager.STREAM_RING) return
-            if (newV <= oldV) return
             if (restoring) return
-            onRaise(oldV, stream)
+            val km = Prefs.keyMode(c)
+            val isUp = newV > oldV
+            val isDown = newV < oldV
+            val allow = when (km) {
+                Prefs.KEY_UP -> isUp
+                Prefs.KEY_DOWN -> isDown
+                else -> isUp || isDown
+            }
+            if (!allow) return
+            onEvent(oldV, stream)
         }
     }
 
@@ -78,7 +86,7 @@ class MediaKeyService : Service() {
         startForeground(1, n)
     }
 
-    private fun onRaise(oldVolume: Int, stream: Int) {
+    private fun onEvent(oldVolume: Int, stream: Int) {
         val now = SystemClock.uptimeMillis()
 
         val pm = getSystemService(Context.POWER_SERVICE) as PowerManager

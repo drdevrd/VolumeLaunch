@@ -51,6 +51,26 @@ class MainActivity : Activity() {
             }
         })
 
+        root.addView(tv("WHICH KEY", 14f, true))
+        val rg = RadioGroup(this).apply { orientation = RadioGroup.HORIZONTAL }
+        val rUp = RadioButton(this).apply { text = "VOL UP"; id = 101 }
+        val rDown = RadioButton(this).apply { text = "VOL DOWN"; id = 102 }
+        val rEither = RadioButton(this).apply { text = "EITHER"; id = 103 }
+        rg.addView(rUp); rg.addView(rDown); rg.addView(rEither)
+        when (Prefs.keyMode(this)) {
+            Prefs.KEY_UP -> rUp.isChecked = true
+            Prefs.KEY_DOWN -> rDown.isChecked = true
+            else -> rEither.isChecked = true
+        }
+        rg.setOnCheckedChangeListener { _, id ->
+            Prefs.setKeyMode(this, when (id) {
+                101 -> Prefs.KEY_UP
+                102 -> Prefs.KEY_DOWN
+                else -> Prefs.KEY_EITHER
+            })
+        }
+        root.addView(rg)
+
         appLabel = tv("")
         root.addView(appLabel)
         root.addView(btn("3. CHOOSE APP TO OPEN") { pickApp() })

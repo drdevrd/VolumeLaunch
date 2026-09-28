@@ -3,6 +3,10 @@ package com.drdevrd.volumelaunch
 import android.content.Context
 
 object Prefs {
+    const val KEY_UP = 0
+    const val KEY_DOWN = 1
+    const val KEY_EITHER = 2
+
     private fun sp(c: Context) = c.getSharedPreferences("vl", Context.MODE_PRIVATE)
     fun pkg(c: Context): String? = sp(c).getString("pkg", null)
     fun setPkg(c: Context, v: String) = sp(c).edit().putString("pkg", v).apply()
@@ -10,4 +14,6 @@ object Prefs {
     fun setHoldMs(c: Context, v: Int) = sp(c).edit().putInt("hold", v).apply()
     fun alsoUnlocked(c: Context): Boolean = sp(c).getBoolean("unlocked", false)
     fun setAlsoUnlocked(c: Context, v: Boolean) = sp(c).edit().putBoolean("unlocked", v).apply()
+    fun keyMode(c: Context): Int = sp(c).getInt("keymode", KEY_UP)
+    fun setKeyMode(c: Context, v: Int) = sp(c).edit().putInt("keymode", v).apply()
 }

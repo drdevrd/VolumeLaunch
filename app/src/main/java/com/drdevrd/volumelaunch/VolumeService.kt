@@ -5,6 +5,7 @@ import android.app.KeyguardManager
 import android.content.Context
 import android.content.Intent
 import android.media.AudioManager
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
@@ -24,6 +25,13 @@ class VolumeService : AccessibilityService() {
         launchTarget()
     }
 
+    override fun onServiceConnected() {
+        super.onServiceConnected()
+        // Ensure the media-key background service is running too
+        val svc = Intent(this, MediaKeyService::class.java)
+        if (Build.VERSION.SDK_INT >= 26) startForegroundService(svc) else startService(svc)
+    }
+
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
     override fun onInterrupt() {}
 
@@ -33,7 +41,9 @@ class VolumeService : AccessibilityService() {
         val km = getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
         val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
         val locked = km.isKeyguardLocked || !pm.isInteractive
-        if (!locked && !Prefs.alsoUnlocked(this) && !tracking) return false
+        // when locked/off, let MediaKeyService handle it (accessibility does not get keys)
+        if (locked) return false
+        if (!Prefs.alsoUnlocked(this) && !tracking) return false
 
         when (event.action) {
             KeyEvent.ACTION_DOWN -> {
@@ -50,13 +60,9 @@ class VolumeService : AccessibilityService() {
                 tracking = false
                 handler.removeCallbacks(fire)
                 if (!holdFired) {
-                    // short press: behave like normal volume up
                     val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
-                    am.adjustStreamVolume(
-                        AudioManager.STREAM_MUSIC,
-                        AudioManager.ADJUST_RAISE,
-                        AudioManager.FLAG_SHOW_UI
-                    )
+                    am.adjustStreamVolume(AudioManager.STREAM_MUSIC,
+                        AudioManager.ADJUST_RAISE, AudioManager.FLAG_SHOW_UI)
                 }
                 return true
             }
@@ -64,21 +70,12 @@ class VolumeService : AccessibilityService() {
         return false
     }
 
-    @Suppress("DEPRECATION")
     private fun launchTarget() {
         val pkg = Prefs.pkg(this) ?: return
         val intent = packageManager.getLaunchIntentForPackage(pkg) ?: return
         try {
             val v = getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
             v.vibrate(VibrationEffect.createOneShot(60, VibrationEffect.DEFAULT_AMPLITUDE))
-        } catch (_: Exception) {}
-        try {
-            val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
-            val wl = pm.newWakeLock(
-                PowerManager.SCREEN_BRIGHT_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP,
-                "volumelaunch:wake"
-            )
-            wl.acquire(5000)
         } catch (_: Exception) {}
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
         startActivity(intent)

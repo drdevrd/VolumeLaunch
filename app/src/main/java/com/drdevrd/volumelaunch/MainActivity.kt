@@ -1,15 +1,16 @@
 package com.drdevrd.volumelaunch
 
+import android.Manifest
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.ComponentName
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.text.TextUtils
-import android.view.Gravity
 import android.widget.*
 
 class MainActivity : Activity() {
@@ -39,18 +40,25 @@ class MainActivity : Activity() {
         root.addView(tv("VOLUME UP HOLD LAUNCHER", 22f, true))
         status = tv("")
         root.addView(status)
+
         root.addView(btn("1. ENABLE ACCESSIBILITY SERVICE") {
             startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
         })
 
+        root.addView(btn("2. ALLOW NOTIFICATION (NEEDED)") {
+            if (Build.VERSION.SDK_INT >= 33) {
+                requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
+            }
+        })
+
         appLabel = tv("")
         root.addView(appLabel)
-        root.addView(btn("2. CHOOSE APP TO OPEN") { pickApp() })
+        root.addView(btn("3. CHOOSE APP TO OPEN") { pickApp() })
 
         holdLabel = tv("")
         root.addView(holdLabel)
         val seek = SeekBar(this).apply {
-            max = 1200 // 300..1500 ms
+            max = 1200
             progress = Prefs.holdMs(this@MainActivity) - 300
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(s: SeekBar?, p: Int, u: Boolean) {
@@ -63,20 +71,41 @@ class MainActivity : Activity() {
         root.addView(seek)
 
         root.addView(CheckBox(this).apply {
-            text = "ALSO WORK WHEN PHONE IS UNLOCKED (BLOCKS NORMAL VOLUME UP HOLD)"
+            text = "ALSO WORK WHEN PHONE IS UNLOCKED"
             isChecked = Prefs.alsoUnlocked(this@MainActivity)
             setOnCheckedChangeListener { _, c -> Prefs.setAlsoUnlocked(this@MainActivity, c) }
         })
 
-        root.addView(btn("3. BATTERY: SET UNRESTRICTED") {
+        root.addView(btn("4. BATTERY: UNRESTRICTED") {
             try {
                 startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
                     Uri.parse("package:$packageName")))
             } catch (_: Exception) {}
         })
-        root.addView(tv("IN APP INFO: BATTERY > UNRESTRICTED. ALSO ENABLE AUTO-LAUNCH IF ONEPLUS SHOWS IT. THEN LOCK PHONE AND HOLD VOLUME UP.", 13f))
+
+        root.addView(btn("5. START / RESTART BACKGROUND SERVICE") { startBg() })
+
+        root.addView(tv("HOW LOCKED-SCREEN DETECTION WORKS: THE APP KEEPS A LOW-PRIORITY NOTIFICATION AND A MEDIA SESSION RUNNING. WHEN YOU HOLD VOLUME UP, ANDROID SENDS REPEAT KEYS TO IT. IF THE ONEPLUS BATTERY SETTING IS RESTRICTED, ANDROID KILLS IT.", 13f))
+        root.addView(tv("SETUP CHECKLIST FOR ONEPLUS 13S:\n• BATTERY = UNRESTRICTED\n• AUTO-LAUNCH = ON (IN BATTERY SETTINGS)\n• LOCK SCREEN NOTIFICATIONS FROM THIS APP = ALLOW", 13f))
 
         setContentView(ScrollView(this).apply { addView(root) })
+
+        startBg()
+        if (Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
+            != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
+        }
+    }
+
+    private fun startBg() {
+        val svc = Intent(this, MediaKeyService::class.java)
+        try {
+            if (Build.VERSION.SDK_INT >= 26) startForegroundService(svc) else startService(svc)
+            Toast.makeText(this, "Background service started", Toast.LENGTH_SHORT).show()
+        } catch (e: Exception) {
+            Toast.makeText(this, "Failed: ${e.message}", Toast.LENGTH_LONG).show()
+        }
     }
 
     override fun onResume() { super.onResume(); refresh() }
@@ -92,7 +121,7 @@ class MainActivity : Activity() {
     }
 
     private fun refresh() {
-        status.text = if (serviceEnabled()) "SERVICE: ON" else "SERVICE: OFF - ENABLE IT BELOW"
+        status.text = if (serviceEnabled()) "ACCESSIBILITY: ON" else "ACCESSIBILITY: OFF"
         val pkg = Prefs.pkg(this)
         val name = pkg?.let {
             try { packageManager.getApplicationLabel(packageManager.getApplicationInfo(it, 0)).toString() }
